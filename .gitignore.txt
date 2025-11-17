@@ -1,0 +1,24 @@
+# Python/local envs / editors
+__pycache__/
+*.pyc
+.env
+.venv/
+env/
+venv/
+.vscode/
+.idea/
+
+# n8n exports or other configs that might accidentally contain secrets
+*.secret.json
+credentials.json
+
+# node_modules / build artifacts
+node_modules/
+
+# large outputs / demo video (use Releases or LFS instead)
+docs/demo_short.mp4
+docs/*.mp4
+
+# OS files
+.DS_Store
+Thumbs.db
