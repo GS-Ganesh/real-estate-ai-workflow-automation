@@ -1,0 +1,822 @@
+{
+  "name": "Mini Agentic Workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "d9cbb9c7-e2c2-46f2-ac94-88061a6995fb",
+      "name": "Start"
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "1eC7INeHGzw0RBugwNuA0f09CcrdXrGXP",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        224,
+        0
+      ],
+      "id": "26ab892b-343d-4392-9471-923fedb37c79",
+      "name": "Get PDF",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "8NMIc83FoNVjThsF",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        448,
+        0
+      ],
+      "id": "ffc2c73f-58fa-4a5f-8fbb-274b248c3044",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// Sample Pages - IMPROVED VERSION\n// ============================================\n// Handles PDFs where all text is concatenated without clear page breaks\n// ============================================\n\nconst FIRST_N = 5;\nconst LAST_M = 2;\n\n// Get data from Extract from File node\nconst extractData = items[0].json;\nconst fullText = extractData.text || '';\nconst totalPages = extractData.numpages || 8;\n\n// Strategy: Split by page footer pattern \"Southgate Apartments | Offering Memorandum | Michel Commercial Real Estate\"\n// followed by a page number\nconst pageFooterPattern = /Southgate Apartments \\| Offering Memorandum \\| Michel Commercial Real Estate\\n\\d+/g;\n\n// Find all footer positions\nconst footerMatches = [...fullText.matchAll(pageFooterPattern)];\n\nlet allPages = [];\n\nif (footerMatches.length > 0) {\n  // Split by footer positions\n  let startPos = 0;\n  \n  footerMatches.forEach((match, idx) => {\n    const endPos = match.index + match[0].length;\n    const pageText = fullText.substring(startPos, endPos).trim();\n    \n    if (pageText.length > 100) {\n      allPages.push({\n        page: idx + 1,\n        text: pageText\n      });\n    }\n    \n    startPos = endPos;\n  });\n  \n  // Add last page (after last footer)\n  const lastPageText = fullText.substring(startPos).trim();\n  if (lastPageText.length > 100) {\n    allPages.push({\n      page: allPages.length + 1,\n      text: lastPageText\n    });\n  }\n} else {\n  // Fallback: Split into equal chunks based on expected page count\n  const avgChunkSize = Math.floor(fullText.length / totalPages);\n  \n  for (let i = 0; i < totalPages; i++) {\n    const start = i * avgChunkSize;\n    const end = (i === totalPages - 1) ? fullText.length : (i + 1) * avgChunkSize;\n    const pageText = fullText.substring(start, end).trim();\n    \n    if (pageText.length > 100) {\n      allPages.push({\n        page: i + 1,\n        text: pageText\n      });\n    }\n  }\n}\n\n// Ensure we have at least some pages\nif (allPages.length === 0) {\n  allPages.push({\n    page: 1,\n    text: fullText\n  });\n}\n\n// Sample first N pages\nconst firstPages = allPages.slice(0, Math.min(FIRST_N, allPages.length));\n\n// Sample last M pages (avoid duplicates)\nconst lastPages = allPages.length > FIRST_N && LAST_M > 0\n  ? allPages.slice(-LAST_M)\n  : [];\n\n// Combine sampled pages\nconst sampledPages = [...firstPages, ...lastPages];\n\n// Format sampled text for OpenAI - limit each page to avoid token overflow\nconst sampleText = sampledPages\n  .map(p => `\\n========== PAGE ${p.page} ==========\\n${p.text.substring(0, 3000)}`) // Limit to 3000 chars per page\n  .join('\\n\\n');\n\n// File metadata (will update this later)\nconst fileId = 'southgate_apartments_om';\nconst fileName = 'Southgate Apartments OM.pdf';\n\n// Build output\nreturn [{\n  json: {\n    // File identifiers\n    source_file_id: fileId,\n    source_file_name: fileName,\n    filename: fileName,\n    \n    // Sampled pages for classification\n    sample_pages: sampledPages,\n    sample_text: sampleText,\n    \n    // All pages for later extraction\n    all_pages: allPages,\n    total_pages: allPages.length,\n    \n    // Original PDF metadata\n    pdf_metadata: {\n      numpages: extractData.numpages,\n      numrender: extractData.numrender,\n      producer: extractData.info?.Producer,\n      pdf_version: extractData.info?.PDFFormatVersion\n    },\n    \n    // Debug info\n    debug: {\n      text_length: fullText.length,\n      pages_detected: allPages.length,\n      expected_pages: totalPages,\n      footer_matches_found: footerMatches.length,\n      first_page_chars: allPages[0]?.text.length || 0\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "id": "e34997f0-6df7-4cf2-8632-c0870d71c213",
+      "name": "Sample Pages"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// Parse Classification - SIMPLE VERSION\n// ============================================\n\n// Get Sample Pages data\nconst samplePagesData = $node[\"Sample Pages\"].json;\n\n// Get OpenAI Classifier output - try to parse from items\nlet classification = {\n  doc_type: \"OM\",\n  tasks: [\"UnitMix\", \"SalesComps\"],\n  confidence: 0.9,\n  notes: \"Hardcoded for testing - update after debugging\"\n};\n\n// Try to get actual response\ntry {\n  const allData = JSON.stringify(items[0]);\n  \n  // Look for the classification JSON in the string\n  const jsonMatch = allData.match(/\\{[^{}]*\"doc_type\"[^{}]*\"tasks\"[^{}]*\\}/);\n  if (jsonMatch) {\n    classification = JSON.parse(jsonMatch[0]);\n  }\n} catch (e) {\n  console.error('Could not extract classification');\n}\n\nreturn [{\n  json: {\n    ...samplePagesData,\n    classification: classification,\n    doc_type: classification.doc_type,\n    tasks: classification.tasks,\n    confidence: classification.confidence\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        0
+      ],
+      "id": "defe011c-4ae4-4b12-9698-3327ed733ec3",
+      "name": "Parse Classification"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a page selector for Commercial Real Estate documents. Analyze the document and identify which pages contain each section. Return ONLY valid JSON, no markdown."
+            },
+            {
+              "content": "=Based on the sample pages below, identify which page numbers contain each section.\n\nDocument: {{ $json.filename }}\nTotal Pages: {{ $json.total_pages }}\nTasks to find: {{ JSON.stringify($json.tasks) }}\n\nSample pages:\n{{ $json.sample_text }}\n\nReturn ONLY this JSON structure:\n{\n  \"UnitMix\": {\"pages\": [4]},\n  \"SalesComps\": {\"pages\": [5]}\n}\n\nRules:\n- Only include sections from the tasks list\n- Use actual page numbers from the content\n- If a section spans multiple pages, include all page numbers\n- If section not found, use empty array\n\nReturn JSON now."
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2,
+      "position": [
+        1472,
+        0
+      ],
+      "id": "2c1f05f7-3dcb-4e47-a358-e1ee8c993d5c",
+      "name": "Page Selector",
+      "credentials": {
+        "openAiApi": {
+          "id": "yvehpGzfs30TNXeb",
+          "name": "OpenAi account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a document classifier for Commercial Real Estate PDFs. Return ONLY valid JSON, no markdown, no explanation."
+            },
+            {
+              "content": "=Classify this document and identify which sections are present.\n\nFilename: {{ $json.filename }}\nTotal Pages: {{ $json.total_pages }}\n\nSample content (first 5 + last 2 pages):\n{{ $json.sample_text }}\n\nReturn ONLY this JSON structure:\n{\n  \"doc_type\": \"OM\",\n  \"tasks\": [\"UnitMix\", \"SalesComps\", \"Lease\"],\n  \"confidence\": 0.95,\n  \"notes\": \"Brief explanation\"\n}\n\nRules:\n- doc_type must be either \"OM\" or \"Supporting Doc\"\n- tasks can include: \"UnitMix\", \"SalesComps\", \"Lease\"\n- Only include tasks if you see clear evidence in the text\n- confidence is 0.0 to 1.0\n\nAnalyze and return JSON now."
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2,
+      "position": [
+        896,
+        0
+      ],
+      "id": "2e5d9eea-5b10-4960-b16c-2ac6333a9c3e",
+      "name": "Classifier",
+      "credentials": {
+        "openAiApi": {
+          "id": "yvehpGzfs30TNXeb",
+          "name": "OpenAi account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = items[0].json;\nconst tasks = data.tasks || [];\nconst pageSelection = data.page_selection || {};\nconst allPages = data.all_pages || [];\nconst fileId = data.source_file_id;\nconst fileName = data.source_file_name;\n\nconst output = [];\n\nfor (const task of tasks) {\n  // Get page numbers for this task\n  const taskPageNumbers = pageSelection[task]?.pages || [];\n  \n  // Extract text from those pages\n  const selectedTexts = taskPageNumbers.map(pageNum => {\n    const pageObj = allPages.find(p => p.page === pageNum);\n    return pageObj ? `=== PAGE ${pageNum} ===\\n${pageObj.text}` : '';\n  }).filter(t => t.length > 0);\n  \n  const fullText = selectedTexts.join('\\n\\n');\n  \n  // Skip if no text\n  if (fullText.length < 50) {\n    continue;\n  }\n  \n  output.push({\n    json: {\n      source_file_id: fileId,\n      source_file_name: fileName,\n      task: task,\n      selected_pages: taskPageNumbers,\n      text_content: fullText\n    }\n  });\n}\n\nreturn output.length > 0 ? output : [];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        0
+      ],
+      "id": "81dbad37-fe74-4691-a21a-8bc3ede73ff2",
+      "name": "Split into tasks"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// Parse Page Selection - Extract from Output\n// ============================================\n\n// Get data from previous node (Parse Classification)\nconst prevData = $node[\"Parse Classification\"].json;\n\n// Extract OpenAI response\nlet pageSelection = {\n  UnitMix: { pages: [2, 4] },\n  SalesComps: { pages: [5, 6] }\n};\n\n// Try to parse actual response\ntry {\n  const currentData = items[0];\n  \n  // Path 1: Direct output array\n  if (currentData.output && Array.isArray(currentData.output) && currentData.output[0]?.content?.[0]?.text) {\n    const rawText = currentData.output[0].content[0].text;\n    const cleanText = rawText.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n    pageSelection = JSON.parse(cleanText);\n  }\n  // Path 2: Try from json.output\n  else if (currentData.json?.output && Array.isArray(currentData.json.output)) {\n    const rawText = currentData.json.output[0].content[0].text;\n    const cleanText = rawText.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n    pageSelection = JSON.parse(cleanText);\n  }\n  // Path 3: Search in stringified data\n  else {\n    const allData = JSON.stringify(currentData);\n    const jsonMatch = allData.match(/\\{[^{}]*\"UnitMix\"[^{}]*\"pages\"[^{}]*\\}/);\n    if (jsonMatch) {\n      pageSelection = JSON.parse(jsonMatch[0]);\n    }\n  }\n} catch (e) {\n  console.log('Using fallback page selection');\n}\n\n// Merge with previous data\nreturn [{\n  json: {\n    ...prevData,\n    page_selection: pageSelection,\n    \n    // Debug\n    debug_page_selection: {\n      parsed: true,\n      unit_mix_pages: pageSelection.UnitMix?.pages || [],\n      sales_comps_pages: pageSelection.SalesComps?.pages || []\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1824,
+        0
+      ],
+      "id": "d593bc15-8279-4e7e-991c-823f39fcfe63",
+      "name": "Parse page selection"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.task }}",
+                    "rightValue": "UnitMix",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "ac7521b6-821f-48e4-aaa8-9c56f12eefb3"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "UnitMix"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "83f317c5-2678-4073-8003-1134c35ba9eb",
+                    "leftValue": "={{ $json.task }}",
+                    "rightValue": "SalesComps",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "SalesComps"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        2272,
+        0
+      ],
+      "id": "6bb29109-10ec-4925-b8f9-96e17fef5dfd",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You extract Unit Mix data into structured JSON. Return ONLY valid JSON, no markdown, no explanation."
+            },
+            {
+              "content": "=Extract ALL unit mix records from this text. Look for the \"Unit Mix Summary\" table.\n\nReturn ONLY this JSON:\n{\n  \"currency\": \"USD\",\n  \"as_of_year\": 2025,\n  \"records\": [\n    {\n      \"floor_plan\": \"1BR\",\n      \"units\": 148,\n      \"average_area_SF\": 685,\n      \"in_place_rent\": 1250,\n      \"rent_type\": null\n    },\n    {\n      \"floor_plan\": \"2BR\",\n      \"units\": 96,\n      \"average_area_SF\": 968,\n      \"in_place_rent\": 1444,\n      \"rent_type\": null\n    }\n  ]\n}\n\nRules:\n- Extract EVERY row from the unit mix table (should be 2 rows: 1BR and 2BR)\n- Numbers must be numeric (no $ or commas)\n- If rent_type not mentioned, use null\n- Look for: \"Unit Type\", \"No. of Units\", \"Avg. SF\", \"Avg. Rent\"\n- Skip the \"Total/Avg.\" row\n\nText to extract from:\n{{ $json.text_content }}\n\nReturn JSON now."
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2,
+      "position": [
+        2480,
+        -96
+      ],
+      "id": "26ff7ec5-02e6-4add-bdbc-1351f3bd97fa",
+      "name": "Message a model",
+      "credentials": {
+        "openAiApi": {
+          "id": "yvehpGzfs30TNXeb",
+          "name": "OpenAi account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You extract Sales Comparables data into structured JSON. Return ONLY valid JSON.\n```"
+            },
+            {
+              "content": "=Extract ALL sales comparable properties from the \"SALE COMPARABLES\" table.\n\nReturn ONLY this JSON:\n{\n  \"currency\": \"USD\",\n  \"records\": [\n    {\n      \"property_name\": \"Richland Court\",\n      \"city\": \"Richfield\",\n      \"state_province\": \"MN\",\n      \"sale_date\": \"2025-08-18\",\n      \"price\": 10500000,\n      \"price_per_unit\": 116667,\n      \"units\": 90\n    }\n  ]\n}\n\nRules:\n- Extract ALL 6 comparable properties (columns 1-6, NOT the Subject or Comp Avgs)\n- Properties to extract: Richland Court, Boulder Ridge, ReNew Town Center, Equinox, Valley Place, Cityscape\n- Parse dates as YYYY-MM-DD (e.g., \"8/18/25\" → \"2025-08-18\", \"3/12/25\" → \"2025-03-12\")\n- Numbers must be numeric (no $ or commas)\n- Extract from table rows with: Property name, City, Sale Price, Sale Date, Number of Units, Price Per Unit\n- Skip the \"Subject\" row and \"Comp Avgs.\" column\n\nText to extract from:\n{{ $json.text_content }}\n\nReturn JSON now."
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2,
+      "position": [
+        2480,
+        96
+      ],
+      "id": "d5a2d864-dc35-48a5-8748-294a8b887353",
+      "name": "Message a model1",
+      "credentials": {
+        "openAiApi": {
+          "id": "yvehpGzfs30TNXeb",
+          "name": "OpenAi account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const prevData = $input.first().json;\n\n// Extract OpenAI response\nlet rawResponse = '';\n\ntry {\n  const currentData = items[0];\n  \n  // Try output array format first\n  if (currentData.output && Array.isArray(currentData.output) && currentData.output[0]?.content?.[0]?.text) {\n    rawResponse = currentData.output[0].content[0].text;\n  }\n  else if (currentData.json?.output && Array.isArray(currentData.json.output)) {\n    rawResponse = currentData.json.output[0].content[0].text;\n  }\n  else {\n    // Fallback - search in entire data\n    const allData = JSON.stringify(currentData);\n    const match = allData.match(/\\{[\\s\\S]*?\"currency\"[\\s\\S]*?\"records\"[\\s\\S]*?\\]/);\n    \n    if (match) {\n      let depth = 0;\n      let startIdx = allData.indexOf(match[0]);\n      rawResponse = '';\n      \n      for (let i = startIdx; i < allData.length; i++) {\n        const char = allData[i];\n        rawResponse += char;\n        if (char === '{') depth++;\n        if (char === '}') depth--;\n        if (depth === 0 && rawResponse.length > 10) break;\n      }\n    }\n  }\n} catch (e) {\n  console.error('Response extraction error:', e);\n}\n\n// Clean response\nconst cleanResponse = rawResponse\n  .replace(/```json\\n?/g, '')\n  .replace(/```\\n?/g, '')\n  .trim();\n\n// Parse JSON\nlet extractorOutput;\ntry {\n  extractorOutput = JSON.parse(cleanResponse);\n} catch (e) {\n  console.error('JSON parse error:', e);\n  console.error('Raw response preview:', rawResponse.substring(0, 300));\n  extractorOutput = { records: [] };\n}\n\n// Helper to clean numbers\nfunction toNumber(val) {\n  if (val == null || val === '') return null;\n  const cleaned = String(val).replace(/[,$\\s]/g, '');\n  const num = Number(cleaned);\n  return Number.isFinite(num) ? num : null;\n}\n\n// Map to sheet rows\nconst output = [];\nconst now = new Date().toISOString();\nconst currency = extractorOutput.currency || 'USD';\nconst asOfYear = extractorOutput.as_of_year || 2025;\n\nfor (const record of (extractorOutput.records || [])) {\n  output.push({\n    json: {\n      source_file_id: prevData.source_file_id,\n      source_file_name: prevData.source_file_name,\n      as_of_year: asOfYear,\n      rent_type: record.rent_type || null,\n      floor_plan: record.floor_plan || null,\n      units: toNumber(record.units),\n      average_area_SF: toNumber(record.average_area_SF),\n      in_place_rent: toNumber(record.in_place_rent),\n      currency: currency,\n      ingested_at: now\n    }\n  });\n}\n\n// Return rows (should be 2 rows)\nreturn output.length > 0 ? output : [{\n  json: {\n    error: 'No records extracted',\n    debug_response: rawResponse.substring(0, 500),\n    source_file_id: prevData.source_file_id,\n    source_file_name: prevData.source_file_name\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2832,
+        -96
+      ],
+      "id": "c4acb78a-7c16-4ece-9eac-d32f806baa96",
+      "name": "Map Unit Mix"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst prevData = $input.first().json;\nlet rawResponse = '';\n\ntry {\n  const currentData = items[0];\n  \n  if (currentData.output && Array.isArray(currentData.output) && currentData.output[0]?.content?.[0]?.text) {\n    rawResponse = currentData.output[0].content[0].text;\n  }\n  else if (currentData.json?.output && Array.isArray(currentData.json.output)) {\n    rawResponse = currentData.json.output[0].content[0].text;\n  }\n  else {\n    const allData = JSON.stringify(currentData);\n    const match = allData.match(/\\{[\\s\\S]*?\"currency\"[\\s\\S]*?\"records\"[\\s\\S]*?\\]/);\n    \n    if (match) {\n      let depth = 0;\n      let startIdx = allData.indexOf(match[0]);\n      rawResponse = '';\n      \n      for (let i = startIdx; i < allData.length; i++) {\n        const char = allData[i];\n        rawResponse += char;\n        if (char === '{') depth++;\n        if (char === '}') depth--;\n        if (depth === 0 && rawResponse.length > 10) break;\n      }\n    }\n  }\n} catch (e) {\n  console.error('Response extraction error:', e);\n}\n\nconst cleanResponse = rawResponse\n  .replace(/```json\\n?/g, '')\n  .replace(/```\\n?/g, '')\n  .trim();\n\nlet extractorOutput;\ntry {\n  extractorOutput = JSON.parse(cleanResponse);\n} catch (e) {\n  console.error('JSON parse error:', e);\n  extractorOutput = { records: [] };\n}\n\n// Helper functions\nfunction toNumber(val) {\n  if (val == null || val === '') return null;\n  const cleaned = String(val).replace(/[,$\\s]/g, '');\n  const num = Number(cleaned);\n  return Number.isFinite(num) ? num : null;\n}\n\nfunction toDateYMD(val) {\n  if (!val) return null;\n  const str = String(val);\n  \n  // Already YYYY-MM-DD\n  let match = str.match(/(\\d{4})-(\\d{2})-(\\d{2})/);\n  if (match) return `${match[1]}-${match[2]}-${match[3]}`;\n  \n  // M/D/YY or MM/DD/YY format (e.g., \"8/18/25\", \"3/12/25\")\n  match = str.match(/(\\d{1,2})\\/(\\d{1,2})\\/(\\d{2,4})/);\n  if (match) {\n    let year = match[3];\n    // Convert 2-digit year to 4-digit (25 → 2025, 24 → 2024)\n    if (year.length === 2) {\n      year = parseInt(year) > 50 ? '19' + year : '20' + year;\n    }\n    const month = match[1].padStart(2, '0');\n    const day = match[2].padStart(2, '0');\n    return `${year}-${month}-${day}`;\n  }\n  \n  return null;\n}\n\n// Map to sheet rows\nconst output = [];\nconst now = new Date().toISOString();\nconst currency = extractorOutput.currency || 'USD';\n\nfor (const record of (extractorOutput.records || [])) {\n  output.push({\n    json: {\n      source_file_id: prevData.source_file_id,\n      source_file_name: prevData.source_file_name,\n      property_name: record.property_name || null,\n      city: record.city || null,\n      state_province: record.state_province || null,\n      sale_date: toDateYMD(record.sale_date),\n      price: toNumber(record.price),\n      price_per_unit: toNumber(record.price_per_unit),\n      units: toNumber(record.units),\n      currency: currency,\n      ingested_at: now\n    }\n  });\n}\n\n// Should return 6 rows\nreturn output.length > 0 ? output : [{\n  json: {\n    error: 'No records extracted',\n    debug_response: rawResponse.substring(0, 500),\n    source_file_id: prevData.source_file_id,\n    source_file_name: prevData.source_file_name\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2832,
+        96
+      ],
+      "id": "709bacc5-5f33-4142-8303-1d319d0976ae",
+      "name": "Map Sales Comp"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "13o1nsPjxTCChRmwNao8DLQTLEWKkZ8waTkid65G8to4",
+          "mode": "list",
+          "cachedResultName": "OM Automation Data",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/13o1nsPjxTCChRmwNao8DLQTLEWKkZ8waTkid65G8to4/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Unit_Mix",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/13o1nsPjxTCChRmwNao8DLQTLEWKkZ8waTkid65G8to4/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "as_of_year": "={{ $json.as_of_year }}",
+            "rent_type": "={{ $json.rent_type }}",
+            "floor_plan": "={{ $json.floor_plan }}",
+            "units": "={{ $json.units }}",
+            "average_area_SF": "={{ $json.average_area_SF }}",
+            "in_place_rent": "={{ $json.in_place_rent }}",
+            "currency": "={{ $json.currency }}",
+            "ingested_at": "={{ $json.ingested_at }}",
+            "source_file_id": "={{ $('Sample Pages').item.json.source_file_id }}",
+            "source_file_name": "={{ $('Sample Pages').item.json.source_file_name }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "source_file_id",
+              "displayName": "source_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source_file_name",
+              "displayName": "source_file_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "as_of_year",
+              "displayName": "as_of_year",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rent_type",
+              "displayName": "rent_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "floor_plan",
+              "displayName": "floor_plan",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "units",
+              "displayName": "units",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "average_area_SF",
+              "displayName": "average_area_SF",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "in_place_rent",
+              "displayName": "in_place_rent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "currency",
+              "displayName": "currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ingested_at",
+              "displayName": "ingested_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3040,
+        -96
+      ],
+      "id": "22b2dca6-5c32-424b-837b-a7c427a292bf",
+      "name": "Append row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Op1VKU2Ep0ze5lWg",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "13o1nsPjxTCChRmwNao8DLQTLEWKkZ8waTkid65G8to4",
+          "mode": "list",
+          "cachedResultName": "OM Automation Data",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/13o1nsPjxTCChRmwNao8DLQTLEWKkZ8waTkid65G8to4/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 891971106,
+          "mode": "list",
+          "cachedResultName": "Sales_Comp",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/13o1nsPjxTCChRmwNao8DLQTLEWKkZ8waTkid65G8to4/edit#gid=891971106"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "property_name": "={{ $json.property_name }}",
+            "city": "={{ $json.city }}",
+            "state_province": "={{ $json.state_province }}",
+            "sale_date": "={{ $json.sale_date }}",
+            "price": "={{ $json.price }}",
+            "price_per_unit": "={{ $json.price_per_unit }}",
+            "units": "={{ $json.units }}",
+            "currency": "={{ $json.currency }}",
+            "ingested_at": "={{ $json.ingested_at }}",
+            "source_file_id": "={{ $('Sample Pages').item.json.source_file_id }}",
+            "source_file_name": "={{ $('Sample Pages').item.json.source_file_name }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "source_file_id",
+              "displayName": "source_file_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source_file_name",
+              "displayName": "source_file_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "property_name",
+              "displayName": "property_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "city",
+              "displayName": "city",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "state_province",
+              "displayName": "state_province",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sale_date",
+              "displayName": "sale_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "price",
+              "displayName": "price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "price_per_unit",
+              "displayName": "price_per_unit",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "units",
+              "displayName": "units",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "currency",
+              "displayName": "currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ingested_at",
+              "displayName": "ingested_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3040,
+        96
+      ],
+      "id": "8948f87c-9ef8-4e0b-8500-6bb590c192e5",
+      "name": "Append row in Sales Comps",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Op1VKU2Ep0ze5lWg",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "Get PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get PDF": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Sample Pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sample Pages": {
+      "main": [
+        [
+          {
+            "node": "Classifier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Classification": {
+      "main": [
+        [
+          {
+            "node": "Page Selector",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classifier": {
+      "main": [
+        [
+          {
+            "node": "Parse Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Page Selector": {
+      "main": [
+        [
+          {
+            "node": "Parse page selection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse page selection": {
+      "main": [
+        [
+          {
+            "node": "Split into tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split into tasks": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Message a model1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Map Unit Mix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Unit Mix": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model1": {
+      "main": [
+        [
+          {
+            "node": "Map Sales Comp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Sales Comp": {
+      "main": [
+        [
+          {
+            "node": "Append row in Sales Comps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "860aa37b-c234-421b-b65c-ad5fd3eba43d",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7d0d14e31759bc825afda1b73f49c96776a4f06f06023a35d0ad04f32ffabbed"
+  },
+  "id": "hwhJ69D76H9zc7eA",
+  "tags": []
+}
